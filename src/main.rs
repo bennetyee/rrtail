@@ -155,6 +155,9 @@ async fn main() {
 
         let mut cmd = tokio::process::Command::new("ssh");
 
+        // Explicitly disable agent forwarding (-a) and redirect standard input (-n)
+        cmd.arg("-a").arg("-n");
+
         if let Some(port) = args.port {
             cmd.arg("-p").arg(port.to_string());
         }
@@ -209,8 +212,6 @@ async fn main() {
         let mut stdout = child.stdout.take().expect("Failed to open stdout");
         let stderr = child.stderr.take().expect("Failed to open stderr");
 
-        // Background task reads stderr chunk-by-chunk. If show_ssh_errors is true,
-        // it forwards the data to the local stderr stream in real-time.
         let show_ssh_errors = args.show_ssh_errors;
         let stderr_handle = tokio::spawn(async move {
             let mut buf = Vec::new();
@@ -265,8 +266,6 @@ async fn main() {
         if let Ok(status) = status_res {
             if !status.success() {
                 eprintln!("ssh process exited with status: {}", status);
-                // If standard error was not already streamed in real-time,
-                // output the captured block on connection failure.
                 if !show_ssh_errors && !stderr_str.is_empty() {
                     eprintln!("ssh stderr:\n{}", stderr_str.trim_end());
                 }
