@@ -136,6 +136,18 @@ fn is_immediate_network_failure(stderr: &str) -> bool {
         || s.contains("kex_exchange_identification")
 }
 
+fn is_authentication_failure(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("permission denied (publickey") || s.contains("too many authentication failures")
+}
+
+fn is_tail_permission_denied(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    // Verify both "permission denied" and the tail application are specified on stderr
+    // to distinguish file permissions from SSH authentication permission errors
+    s.contains("permission denied") && s.contains("tail")
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -158,8 +170,11 @@ async fn main() {
 
         let mut cmd = tokio::process::Command::new("ssh");
 
-        // Explicitly disable agent forwarding (-a) and redirect standard input (-n)
-        cmd.arg("-a").arg("-n");
+        // Disable agent forwarding (-a), standard input (-n), and password authentication
+        cmd.arg("-a")
+            .arg("-n")
+            .arg("-o")
+            .arg("PasswordAuthentication=no");
 
         // Set TcpKeepAlive on the SSH command line unless overridden by --no-keepalive
         if !args.no_keepalive {
@@ -280,6 +295,22 @@ async fn main() {
             }
         } else if let Err(e) = status_res {
             eprintln!("Error waiting for ssh process: {}", e);
+        }
+
+        // Check for specific authentication failures and abort if detected
+        if is_authentication_failure(&stderr_str) {
+            eprintln!(
+                "Critical Error: SSH Authentication Failed. Ensure your key manager (ssh-agent) is running and loaded or that the correct identity file is specified."
+            );
+            std::process::exit(1);
+        }
+
+        // Check for specific filesystem permission failures from remote tail and abort if detected
+        if is_tail_permission_denied(&stderr_str) {
+            eprintln!(
+                "Critical Error: Remote tail process exited with Permission Denied. Ensure the remote user has permission to read the specified file."
+            );
+            std::process::exit(1);
         }
 
         if run_bytes_transferred > 0 || run_duration > Duration::from_secs(10) {
