@@ -146,6 +146,11 @@ fn is_tail_permission_denied(stderr: &str) -> bool {
     s.contains("permission denied") && s.contains("tail")
 }
 
+fn is_tail_file_not_found(stderr: &str) -> bool {
+    let s = stderr.to_lowercase();
+    s.contains("no such file or directory") && s.contains("tail")
+}
+
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
@@ -158,7 +163,7 @@ async fn main() {
         }
     };
 
-    // Construct the invariant part of the SSH command argument vector outside of the loop
+    // Construct the invariant part of the SSH command argument vector
     let mut invariant_ssh_args: Vec<String> = vec![
         "-a".to_string(),
         "-n".to_string(),
@@ -200,7 +205,6 @@ async fn main() {
         invariant_ssh_args.push(u.clone());
     }
 
-    // The target host is also invariant
     invariant_ssh_args.push(host.clone());
 
     let mut bytes_transferred: u64 = 0;
@@ -212,11 +216,8 @@ async fn main() {
         let tail_bytes_arg = format!("+{}", target_offset + 1);
 
         let mut cmd = tokio::process::Command::new("ssh");
-
-        // Apply pre-built invariant arguments
         cmd.args(&invariant_ssh_args);
 
-        // Append the only dynamic argument (the remote tail execution)
         let tail_cmd = format!("tail -f --bytes={} {}", tail_bytes_arg, pathspec);
         cmd.arg(tail_cmd);
 
@@ -309,6 +310,7 @@ async fn main() {
             eprintln!("Error waiting for ssh process: {}", e);
         }
 
+        // Check for specific authentication failures and abort if detected
         if is_authentication_failure(&stderr_str) {
             eprintln!(
                 "Critical Error: SSH Authentication Failed. Ensure your key manager (ssh-agent) is running and loaded or that the correct identity file is specified."
@@ -316,9 +318,18 @@ async fn main() {
             std::process::exit(1);
         }
 
+        // Check for specific filesystem permission failures from remote tail and abort if detected
         if is_tail_permission_denied(&stderr_str) {
             eprintln!(
                 "Critical Error: Remote tail process exited with Permission Denied. Ensure the remote user has permission to read the specified file."
+            );
+            std::process::exit(1);
+        }
+
+        // Check for file-not-found failures from remote tail and abort if detected
+        if is_tail_file_not_found(&stderr_str) {
+            eprintln!(
+                "Critical Error: Remote file does not exist (No such file or directory). Ensure the target path is correct."
             );
             std::process::exit(1);
         }
