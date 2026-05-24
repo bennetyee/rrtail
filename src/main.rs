@@ -143,8 +143,6 @@ fn is_authentication_failure(stderr: &str) -> bool {
 
 fn is_tail_permission_denied(stderr: &str) -> bool {
     let s = stderr.to_lowercase();
-    // Verify both "permission denied" and the tail application are specified on stderr
-    // to distinguish file permissions from SSH authentication permission errors
     s.contains("permission denied") && s.contains("tail")
 }
 
@@ -160,6 +158,51 @@ async fn main() {
         }
     };
 
+    // Construct the invariant part of the SSH command argument vector outside of the loop
+    let mut invariant_ssh_args: Vec<String> = vec![
+        "-a".to_string(),
+        "-n".to_string(),
+        "-o".to_string(),
+        "PasswordAuthentication=no".to_string(),
+    ];
+
+    if !args.no_keepalive {
+        invariant_ssh_args.push("-o".to_string());
+        invariant_ssh_args.push("TcpKeepAlive=Yes".to_string());
+    }
+
+    if let Some(port) = args.port {
+        invariant_ssh_args.push("-p".to_string());
+        invariant_ssh_args.push(port.to_string());
+    }
+    if let Some(ref config) = args.ssh_config {
+        invariant_ssh_args.push("-F".to_string());
+        invariant_ssh_args.push(config.clone());
+    }
+    if let Some(ref identity) = args.identity_file {
+        invariant_ssh_args.push("-i".to_string());
+        invariant_ssh_args.push(identity.clone());
+    }
+    if let Some(ref cipher) = args.cipher_spec {
+        invariant_ssh_args.push("-c".to_string());
+        invariant_ssh_args.push(cipher.clone());
+    }
+    if let Some(ref bind_interface) = args.bind_interface {
+        invariant_ssh_args.push("-B".to_string());
+        invariant_ssh_args.push(bind_interface.clone());
+    }
+    if let Some(ref bind_addr) = args.bind_address {
+        invariant_ssh_args.push("-b".to_string());
+        invariant_ssh_args.push(bind_addr.clone());
+    }
+    if let Some(ref u) = user {
+        invariant_ssh_args.push("-l".to_string());
+        invariant_ssh_args.push(u.clone());
+    }
+
+    // The target host is also invariant
+    invariant_ssh_args.push(host.clone());
+
     let mut bytes_transferred: u64 = 0;
     let mut retry_count = 0;
     let mut current_backoff = args.initial_retry_backoff;
@@ -170,41 +213,10 @@ async fn main() {
 
         let mut cmd = tokio::process::Command::new("ssh");
 
-        // Disable agent forwarding (-a), standard input (-n), and password authentication
-        cmd.arg("-a")
-            .arg("-n")
-            .arg("-o")
-            .arg("PasswordAuthentication=no");
+        // Apply pre-built invariant arguments
+        cmd.args(&invariant_ssh_args);
 
-        // Set TcpKeepAlive on the SSH command line unless overridden by --no-keepalive
-        if !args.no_keepalive {
-            cmd.arg("-o").arg("TcpKeepAlive=Yes");
-        }
-
-        if let Some(port) = args.port {
-            cmd.arg("-p").arg(port.to_string());
-        }
-        if let Some(ref config) = args.ssh_config {
-            cmd.arg("-F").arg(config);
-        }
-        if let Some(ref identity) = args.identity_file {
-            cmd.arg("-i").arg(identity);
-        }
-        if let Some(ref cipher) = args.cipher_spec {
-            cmd.arg("-c").arg(cipher);
-        }
-        if let Some(ref bind_interface) = args.bind_interface {
-            cmd.arg("-B").arg(bind_interface);
-        }
-        if let Some(ref bind_addr) = args.bind_address {
-            cmd.arg("-b").arg(bind_addr);
-        }
-        if let Some(ref u) = user {
-            cmd.arg("-l").arg(u);
-        }
-
-        cmd.arg(&host);
-
+        // Append the only dynamic argument (the remote tail execution)
         let tail_cmd = format!("tail -f --bytes={} {}", tail_bytes_arg, pathspec);
         cmd.arg(tail_cmd);
 
@@ -297,7 +309,6 @@ async fn main() {
             eprintln!("Error waiting for ssh process: {}", e);
         }
 
-        // Check for specific authentication failures and abort if detected
         if is_authentication_failure(&stderr_str) {
             eprintln!(
                 "Critical Error: SSH Authentication Failed. Ensure your key manager (ssh-agent) is running and loaded or that the correct identity file is specified."
@@ -305,7 +316,6 @@ async fn main() {
             std::process::exit(1);
         }
 
-        // Check for specific filesystem permission failures from remote tail and abort if detected
         if is_tail_permission_denied(&stderr_str) {
             eprintln!(
                 "Critical Error: Remote tail process exited with Permission Denied. Ensure the remote user has permission to read the specified file."
