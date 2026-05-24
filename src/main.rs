@@ -71,6 +71,9 @@ struct Args {
     )]
     show_ssh_errors: bool,
 
+    #[arg(long, help = "Do not configure SSH with the TcpKeepAlive=Yes option")]
+    no_keepalive: bool,
+
     #[arg(help = "Source specification in the format [user@]host:pathspec")]
     source: String,
 }
@@ -157,6 +160,11 @@ async fn main() {
 
         // Explicitly disable agent forwarding (-a) and redirect standard input (-n)
         cmd.arg("-a").arg("-n");
+
+        // Set TcpKeepAlive on the SSH command line unless overridden by --no-keepalive
+        if !args.no_keepalive {
+            cmd.arg("-o").arg("TcpKeepAlive=Yes");
+        }
 
         if let Some(port) = args.port {
             cmd.arg("-p").arg(port.to_string());
