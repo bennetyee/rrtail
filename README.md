@@ -9,12 +9,24 @@ you're suspending it as you leave the cafe, `rrtail` will pause for a
 few seconds, then run `ssh -l user host tail --bytes=+COUNT path` with
 `COUNT` being the number of bytes transfered earlier.  This resumes
 the log transfer process transparently from the point of view of the
-consumer of `rrtail`'s output.
+consumer of `rrtail`'s output.  This _masks the network failure_.
 
 The duration by which `rrtail` sleeps after a network problem is
 subject to exponential backoff up to an upper limit.  There are
 command line arguments that control the initial value, the base value
 for the exponent, and the upper bound.
+
+## EXAMPLE
+
+```sh
+$ rrtail ddns:span-data/all-circuits.log | eval live_plotter --timestamp --labels $(cat span-data/labels) -v $(expr 60 \* 60 \* 24 \* 2)
+```
+
+Here, we use `rrtail` to grab log data that is used to generate a
+bunch of time-series plots that allows us to visualize energy usage
+according to the SPAN smart breaker panel.
+
+See https://github.com/bennetyee/live_plotter for details of that program.
 
 ## BUGS
 
@@ -28,7 +40,7 @@ know what `COUNT` value to use for the new file.
 It might be possible to `ssh` into the source host, run `tail -F` with
 its output going to a tool like `nc` such that these processes don't
 get SIGHUP when the `ssh ` dies, except `nc -l` only accepts a single
-connection and then dies, rather than provide single-client resumption
+connection and then exits, rather than provide single-client resumption
 semantics.
 
 This is the "initial" release of `rrtail`.  The network error message
