@@ -74,6 +74,14 @@ struct Args {
     #[arg(long, help = "Do not configure SSH with the TcpKeepAlive=Yes option")]
     no_keepalive: bool,
 
+    #[arg(
+        short = 'v',
+        long = "verbose",
+        action = clap::ArgAction::Count,
+        help = "Increase verbosity level (e.g., -v, -vv)"
+    )]
+    verbose: u8,
+
     #[arg(help = "Source specification in the format [user@]host:pathspec")]
     source: String,
 }
@@ -219,10 +227,29 @@ async fn main() {
         cmd.args(&invariant_ssh_args);
 
         let tail_cmd = format!("tail -f --bytes={} {}", tail_bytes_arg, pathspec);
-        cmd.arg(tail_cmd);
+        cmd.arg(&tail_cmd);
 
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+
+        if args.verbose >= 2 {
+            let timestamp = humantime::format_rfc3339(std::time::SystemTime::now());
+            let mut cmd_parts = vec!["ssh".to_string()];
+            cmd_parts.extend(invariant_ssh_args.clone());
+            cmd_parts.push(tail_cmd.clone());
+            let formatted_cmd = cmd_parts
+                .iter()
+                .map(|arg| {
+                    if arg.contains(' ') || arg.contains('"') || arg.is_empty() {
+                        format!("{:?}", arg)
+                    } else {
+                        arg.clone()
+                    }
+                })
+                .collect::<Vec<String>>()
+                .join(" ");
+            eprintln!("[{}] Executing: {}", timestamp, formatted_cmd);
+        }
 
         let start_time = Instant::now();
 
@@ -276,13 +303,55 @@ async fn main() {
 
         loop {
             match stdout.read(&mut stdout_buf).await {
-                Ok(0) => break,
+                Ok(0) => {
+                    if args.verbose >= 1 {
+                        let timestamp = humantime::format_rfc3339(std::time::SystemTime::now());
+                        eprintln!("\n[{}] Subprocess stdout reached EOF.", timestamp);
+                    }
+                    break;
+                }
                 Ok(n) => {
+                    // Check for a broken output pipe when writing standard output data
                     if let Err(e) = local_stdout.write_all(&stdout_buf[..n]).await {
+                        if e.kind() == std::io::ErrorKind::BrokenPipe {
+                            std::process::exit(0);
+                        }
                         eprintln!("Error writing to standard output: {}", e);
                         break;
                     }
-                    let _ = local_stdout.flush().await;
+                    if let Err(e) = local_stdout.flush().await {
+                        if e.kind() == std::io::ErrorKind::BrokenPipe {
+                            std::process::exit(0);
+                        }
+                        eprintln!("Error flushing standard output: {}", e);
+                        break;
+                    }
+
+                    if args.verbose >= 2 {
+                        let mut local_stderr = tokio::io::stderr();
+                        let _ = local_stderr.write_all(&stdout_buf[..n]).await;
+                        let _ = local_stderr.flush().await;
+                    }
+
+                    if args.verbose == 1 {
+                        let old_blocks = bytes_transferred / 1024;
+                        let new_blocks = (bytes_transferred + n as u64) / 1024;
+                        if new_blocks > old_blocks {
+                            let mut local_stderr = tokio::io::stderr();
+                            for b in (old_blocks + 1)..=new_blocks {
+                                let indicator = if b % 32 == 0 {
+                                    b"|"
+                                } else if b % 8 == 0 {
+                                    b","
+                                } else {
+                                    b"."
+                                };
+                                let _ = local_stderr.write_all(indicator).await;
+                            }
+                            let _ = local_stderr.flush().await;
+                        }
+                    }
+
                     bytes_transferred += n as u64;
                     run_bytes_transferred += n as u64;
                 }
